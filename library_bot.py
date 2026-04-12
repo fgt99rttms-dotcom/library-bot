@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ─── Настройки ────────────────────────────────────────────────
-TOKEN = "8657476988:AAH1HZZDIw2ZmTOrAZS_RpgTiYwVPl0iPoI"  # Вставьте токен от @BotFather
+TOKEN = "8657476988:AAGRUqVkBYposwKPV70ptAPnHaT1DIVu38Q"  # Вставьте токен от @BotFather
 DB_FILE = "library.json"
 
 # Состояния диалога
@@ -43,7 +43,7 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     name = update.effective_user.first_name
     text = (
         f"👋 Привет, {name}!\n\n"
-        "📚 *Я — бот-библиотека.* Помогу вести учёт книг для вашей группы.\n\n"
+        "📚 *Я — бот-библиотека.* Помогу найти нужную книгу  для вас и вашей группы.\n\n"
         "Выберите действие:"
     )
     await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu())
