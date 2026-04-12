@@ -1,0 +1,347 @@
+"""
+📚 Телеграм Бот-Библиотека
+Установка: pip install python-telegram-bot
+Запуск: python library_bot.py
+"""
+
+import json
+import os
+from datetime import datetime
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+)
+
+# ─── Настройки ────────────────────────────────────────────────
+TOKEN = "8657476988:AAGRUqVkBYposwKPV70ptAPnHaT1DIVu38Q"  # Вставьте токен от @BotFather
+DB_FILE = "library.json"
+
+# Состояния диалога
+WAIT_TITLE, WAIT_AUTHOR, WAIT_GENRE, WAIT_SEARCH = range(4)
+
+
+# ─── База данных (JSON файл) ───────────────────────────────────
+def load_db():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"books": []}
+
+def save_db(db):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=2)
+
+def get_next_id(db):
+    if not db["books"]:
+        return 1
+    return max(b["id"] for b in db["books"]) + 1
+
+
+# ─── Команда /start ────────────────────────────────────────────
+async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    name = update.effective_user.first_name
+    text = (
+        f"👋 Привет, {name}!\n\n"
+        "📚 *Я — бот-библиотека.* Помогу вести учёт книг для вашей группы.\n\n"
+        "Выберите действие:"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu())
+
+def main_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📋 Каталог книг",      callback_data="catalog")],
+        [InlineKeyboardButton("➕ Добавить книгу",    callback_data="add")],
+        [InlineKeyboardButton("🔍 Поиск",             callback_data="search")],
+        [InlineKeyboardButton("📖 Взятые книги",      callback_data="taken")],
+    ])
+
+
+# ─── Каталог ───────────────────────────────────────────────────
+async def show_catalog(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db = load_db()
+
+    if not db["books"]:
+        await query.edit_message_text(
+            "📭 Библиотека пуста. Добавьте первую книгу!",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("➕ Добавить", callback_data="add"),
+                InlineKeyboardButton("🏠 Меню", callback_data="menu")
+            ]])
+        )
+        return
+
+    lines = ["📚 *Каталог библиотеки:*\n"]
+    for b in db["books"]:
+        status = f"📖 читает @{b['taken_by']}" if b.get("taken_by") else "✅ доступна"
+        genre = f" • _{b['genre']}_" if b.get("genre") else ""
+        lines.append(f"*{b['id']}.* {b['title']}\n   👤 {b['author']}{genre}\n   {status}\n")
+
+    keyboard = []
+    # Кнопки для каждой книги
+    for b in db["books"]:
+        if b.get("taken_by"):
+            keyboard.append([InlineKeyboardButton(
+                f"↩️ Вернуть «{b['title'][:25]}»", callback_data=f"return_{b['id']}"
+            )])
+        else:
+            keyboard.append([InlineKeyboardButton(
+                f"📖 Взять «{b['title'][:25]}»", callback_data=f"take_{b['id']}"
+            )])
+    keyboard.append([
+        InlineKeyboardButton("🗑 Удалить книгу", callback_data="delete_menu"),
+        InlineKeyboardButton("🏠 Меню", callback_data="menu")
+    ])
+
+    await query.edit_message_text(
+        "\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+# ─── Добавление книги ──────────────────────────────────────────
+async def add_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    ctx.user_data.clear()
+    await query.edit_message_text("✏️ Введите *название* книги:", parse_mode="Markdown")
+    return WAIT_TITLE
+
+async def got_title(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["title"] = update.message.text.strip()
+    await update.message.reply_text("👤 Введите *автора* книги:", parse_mode="Markdown")
+    return WAIT_AUTHOR
+
+async def got_author(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["author"] = update.message.text.strip()
+    await update.message.reply_text(
+        "🏷 Введите *жанр* (или нажмите /skip чтобы пропустить):",
+        parse_mode="Markdown"
+    )
+    return WAIT_GENRE
+
+async def got_genre(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["genre"] = update.message.text.strip()
+    return await save_book(update, ctx)
+
+async def skip_genre(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    ctx.user_data["genre"] = ""
+    return await save_book(update, ctx)
+
+async def save_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    db = load_db()
+    book = {
+        "id": get_next_id(db),
+        "title": ctx.user_data["title"],
+        "author": ctx.user_data["author"],
+        "genre": ctx.user_data.get("genre", ""),
+        "taken_by": None,
+        "taken_date": None,
+        "added_by": update.effective_user.username or update.effective_user.first_name,
+        "added_date": datetime.now().strftime("%d.%m.%Y"),
+    }
+    db["books"].append(book)
+    save_db(db)
+
+    genre_str = f"\n🏷 Жанр: {book['genre']}" if book['genre'] else ""
+    await update.message.reply_text(
+        f"✅ *Книга добавлена!*\n\n"
+        f"📖 {book['title']}\n"
+        f"👤 {book['author']}{genre_str}",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("➕ Ещё книгу", callback_data="add"),
+            InlineKeyboardButton("📋 Каталог", callback_data="catalog"),
+        ]])
+    )
+    return ConversationHandler.END
+
+async def cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Отменено.", reply_markup=main_menu())
+    return ConversationHandler.END
+
+
+# ─── Взять / Вернуть книгу ─────────────────────────────────────
+async def take_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    book_id = int(query.data.split("_")[1])
+    username = query.from_user.username or query.from_user.first_name
+
+    db = load_db()
+    for b in db["books"]:
+        if b["id"] == book_id:
+            if b.get("taken_by"):
+                await query.answer(f"❗ Книгу уже взял @{b['taken_by']}", show_alert=True)
+                return
+            b["taken_by"] = username
+            b["taken_date"] = datetime.now().strftime("%d.%m.%Y")
+            save_db(db)
+            await query.answer(f"✅ Вы взяли «{b['title']}»", show_alert=True)
+            break
+
+    await show_catalog(update, ctx)
+
+async def return_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    book_id = int(query.data.split("_")[1])
+
+    db = load_db()
+    for b in db["books"]:
+        if b["id"] == book_id:
+            b["taken_by"] = None
+            b["taken_date"] = None
+            save_db(db)
+            await query.answer(f"✅ «{b['title']}» возвращена!", show_alert=True)
+            break
+
+    await show_catalog(update, ctx)
+
+
+# ─── Взятые книги ─────────────────────────────────────────────
+async def show_taken(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db = load_db()
+    taken = [b for b in db["books"] if b.get("taken_by")]
+
+    if not taken:
+        await query.edit_message_text(
+            "✅ Все книги на месте! Никто ничего не читает.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu")]])
+        )
+        return
+
+    lines = ["📖 *Книги на руках:*\n"]
+    for b in taken:
+        lines.append(f"• *{b['title']}* — {b['author']}\n  👤 @{b['taken_by']} (с {b['taken_date']})\n")
+
+    await query.edit_message_text(
+        "\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Меню", callback_data="menu")]])
+    )
+
+
+# ─── Поиск ────────────────────────────────────────────────────
+async def search_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🔍 Введите название книги или имя автора:")
+    return WAIT_SEARCH
+
+async def do_search(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    q = update.message.text.strip().lower()
+    db = load_db()
+    results = [
+        b for b in db["books"]
+        if q in b["title"].lower() or q in b["author"].lower()
+    ]
+
+    if not results:
+        await update.message.reply_text(
+            f"😔 По запросу «{update.message.text}» ничего не найдено.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔍 Искать снова", callback_data="search"),
+                InlineKeyboardButton("🏠 Меню", callback_data="menu"),
+            ]])
+        )
+    else:
+        lines = [f"🔍 *Найдено {len(results)} книг:*\n"]
+        for b in results:
+            status = f"📖 читает @{b['taken_by']}" if b.get("taken_by") else "✅ доступна"
+            lines.append(f"*{b['title']}* — {b['author']}\n{status}\n")
+        await update.message.reply_text(
+            "\n".join(lines), parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📋 Каталог", callback_data="catalog"),
+                InlineKeyboardButton("🏠 Меню", callback_data="menu"),
+            ]])
+        )
+    return ConversationHandler.END
+
+
+# ─── Удаление книги ───────────────────────────────────────────
+async def delete_menu(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    db = load_db()
+
+    if not db["books"]:
+        await query.answer("Библиотека пуста!", show_alert=True)
+        return
+
+    keyboard = []
+    for b in db["books"]:
+        keyboard.append([InlineKeyboardButton(
+            f"🗑 {b['title'][:30]}", callback_data=f"del_{b['id']}"
+        )])
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="catalog")])
+
+    await query.edit_message_text(
+        "🗑 *Выберите книгу для удаления:*", parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+async def delete_book(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    book_id = int(query.data.split("_")[1])
+    db = load_db()
+    db["books"] = [b for b in db["books"] if b["id"] != book_id]
+    save_db(db)
+    await query.answer("✅ Книга удалена!", show_alert=True)
+    await show_catalog(update, ctx)
+
+
+# ─── Вспомогательные хендлеры ─────────────────────────────────
+async def menu_callback(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Выберите действие:", reply_markup=main_menu())
+
+
+# ─── Запуск бота ──────────────────────────────────────────────
+def main():
+    app = Application.builder().token(TOKEN).build()
+
+    # Добавление книги (диалог)
+    add_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(add_start, pattern="^add$")],
+        states={
+            WAIT_TITLE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_title)],
+            WAIT_AUTHOR: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_author)],
+            WAIT_GENRE:  [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, got_genre),
+                CommandHandler("skip", skip_genre),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    # Поиск (диалог)
+    search_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(search_start, pattern="^search$")],
+        states={
+            WAIT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, do_search)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(add_conv)
+    app.add_handler(search_conv)
+    app.add_handler(CallbackQueryHandler(show_catalog,  pattern="^catalog$"))
+    app.add_handler(CallbackQueryHandler(show_taken,    pattern="^taken$"))
+    app.add_handler(CallbackQueryHandler(delete_menu,   pattern="^delete_menu$"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu$"))
+    app.add_handler(CallbackQueryHandler(take_book,     pattern="^take_\d+$"))
+    app.add_handler(CallbackQueryHandler(return_book,   pattern="^return_\d+$"))
+    app.add_handler(CallbackQueryHandler(delete_book,   pattern="^del_\d+$"))
+
+    print("🤖 Бот запущен! Нажмите Ctrl+C для остановки.")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()
