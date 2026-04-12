@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 # ─── Настройки ────────────────────────────────────────────────
-TOKEN = "8657476988:AAGRUqVkBYposwKPV70ptAPnHaT1DIVu38Q"  # Вставьте токен от @BotFather
+TOKEN = "8657476988:AAH1HZZDIw2ZmTOrAZS_RpgTiYwVPl0iPoI"  # Вставьте токен от @BotFather
 DB_FILE = "library.json"
 
 # Состояния диалога
