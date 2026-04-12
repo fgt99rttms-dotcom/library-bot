@@ -124,7 +124,7 @@ return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 await update.message.reply_text(
-“👋 Привет! Я бот библиотеки.\n\n”
+“👋 Привет! Я бот библиотека.\n\n”
 “📖 Напиши название книги или имя автора — я найду и отправлю PDF.\n\n”
 “Сначала выбери курс:”,
 reply_markup=course_keyboard()
