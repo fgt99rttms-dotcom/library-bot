@@ -17,7 +17,7 @@ ConversationHandler,
 
 # =============================================
 
-BOT_TOKEN = "8657476988:AAH1HZZDIw2ZmTOrAZS_RpgTiYwVPl0iPoI"
+BOT_TOKEN = “ВАШ_ТОКЕН_ЗДЕСЬ”
 ADMIN_ID = 1009646927  # Замени на свой Telegram ID (узнай у @userinfobot)
 
 BOOKS_DIR = “books”
