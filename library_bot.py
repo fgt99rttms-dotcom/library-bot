@@ -17,8 +17,8 @@ ConversationHandler,
 
 # =============================================
 
-BOT_TOKEN = “ВАШ_ТОКЕН_ЗДЕСЬ”
-ADMIN_ID = 1009646927  # Замени на свой Telegram ID (узнай у @userinfobot)
+BOT_TOKEN = os.environ.get(“BOT_TOKEN”, “”)
+ADMIN_ID = int(os.environ.get(“ADMIN_ID”, “0”))
 
 BOOKS_DIR = “books”
 COURSES_FILE = “courses.json”  # Файл где хранятся курсы
