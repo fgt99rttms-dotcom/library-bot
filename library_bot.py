@@ -7,6 +7,11 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
+# ========== ВОТ ЭТИ ДВЕ СТРОЧКИ БЫЛИ ПРОПУЩЕНЫ! ==========
+bot = Bot(token="8657476988:AAH1HZZDIw2ZmTOrAZS_RpgTiYwVPl0iPoI")  # ← ВСТАВЬ СВОЙ ТОКЕН СЮДА
+dp = Dispatcher(storage=MemoryStorage())
+# ========================================================
+
 # --- Состояния для админ-панели ---
 class AdminStates(StatesGroup):
     waiting_course_id = State()
@@ -61,16 +66,12 @@ async def start(message: types.Message):
     config = load_config()
     
     # Если бот еще не настроен
-    if not config["bot_token"] or not config["admin_id"]:
-        if message.from_user.id == message.from_user.id:  # Первый запустивший становится админом
-            config["bot_token"] = "SETUP_COMPLETE"  # Маркер, что бот запущен
-            config["admin_id"] = message.from_user.id
-            save_config(config)
-            await message.answer("✅ Бот настроен! Вы стали администратором.\nТеперь перезапустите бота командой /start")
-            return
-        else:
-            await message.answer("⚠️ Бот еще не настроен. Первый запустивший становится администратором.")
-            return
+    if not config["bot_token"] or config["bot_token"] == "SETUP_COMPLETE":
+        config["bot_token"] = "SETUP_COMPLETE"
+        config["admin_id"] = message.from_user.id
+        save_config(config)
+        await message.answer("✅ Бот настроен! Вы стали администратором.\n\nТеперь нужно:\n1. Отредактировать config.json\n2. Вставить туда токен от @BotFather\n3. Перезапустить бота")
+        return
     
     data = load_data()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
@@ -206,7 +207,6 @@ async def add_course_name(message: types.Message, state: FSMContext):
     data = await state.get_data()
     course_id = data["course_id"]
     
-    config = load_config()
     if not is_admin(message.from_user.id):
         await message.answer("❌ Нет прав")
         await state.clear()
@@ -275,18 +275,15 @@ async def add_subject_file(message: types.Message, state: FSMContext):
     course_id = data["subject_course"]
     subject_name = data["subject_name"]
     
-    # Создаем папку если нет
     if not os.path.exists("pdf"):
         os.makedirs("pdf")
     
-    # Сохраняем файл
     file_name = f"{course_id}_{subject_name}.pdf".replace(" ", "_")
     file_path = os.path.join("pdf", file_name)
     
     file = await bot.get_file(message.document.file_id)
     await bot.download_file(file.file_path, file_path)
     
-    # Обновляем данные
     bot_data = load_data()
     if course_id not in bot_data["courses"]:
         await message.answer("❌ Курс не найден!")
@@ -295,7 +292,6 @@ async def add_subject_file(message: types.Message, state: FSMContext):
     
     bot_data["courses"][course_id]["subjects"][subject_name] = file_path
     
-    # Добавляем в поиск
     bot_data["books"].append({
         "title": subject_name,
         "author": f"{bot_data['courses'][course_id]['name']}",
@@ -357,16 +353,13 @@ async def delete_course_confirm(callback: types.CallbackQuery):
     
     course_name = data["courses"][course_id]["name"]
     
-    # Удаляем файлы предметов
     for subject_name, file_path in data["courses"][course_id]["subjects"].items():
         if os.path.exists(file_path):
             os.remove(file_path)
     
-    # Удаляем из поиска
     data["books"] = [book for book in data["books"] 
                      if not book["file"].startswith(f"pdf/{course_id}_")]
     
-    # Удаляем курс
     del data["courses"][course_id]
     save_data(data)
     
@@ -375,18 +368,6 @@ async def delete_course_confirm(callback: types.CallbackQuery):
 
 # --- Запуск бота ---
 async def main():
-    config = load_config()
-    if not config["bot_token"] or config["bot_token"] == "SETUP_COMPLETE":
-        print("\n" + "="*50)
-        print("🔧 ПЕРВЫЙ ЗАПУСК!")
-        print("="*50)
-        print("1. Получите токен у @BotFather в Telegram")
-        print("2. Отредактируйте файл config.json и вставьте токен:")
-        print('   {"bot_token": "ТУТ_ВАШ_ТОКЕН", "admin_id": null}')
-        print("3. Запустите бота снова")
-        print("="*50 + "\n")
-        return
-    
     print("✅ Бот запущен!")
     await dp.start_polling(bot)
 
