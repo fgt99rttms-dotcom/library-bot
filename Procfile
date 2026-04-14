@@ -1,1 +1,0 @@
-worker: python library_bot.py
