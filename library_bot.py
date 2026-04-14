@@ -7,25 +7,13 @@ ApplicationBuilder, CommandHandler, CallbackQueryHandler,
 MessageHandler, ContextTypes, filters
 )
 
-# ──────────────────────────────────────────
-
-# CONFIG
-
-# ──────────────────────────────────────────
-
-TOKEN = os.getenv(“BOT_TOKEN”, “8657476988:AAH1HZZDIw2ZmTOrAZS_RpgTiYwVPl0iPoI”)  # задайте переменную окружения BOT_TOKEN
-ADMIN_ID = int(os.getenv(“ADMIN_ID”, “1009646927”))
+TOKEN = os.getenv(“BOT_TOKEN”)
+ADMIN_ID = int(os.getenv(“ADMIN_ID”))
 DATA_FILE = “courses.json”
-PAGE_SIZE = 8  # макс. кнопок на страницу
+PAGE_SIZE = 8
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(**name**)
-
-# ──────────────────────────────────────────
-
-# ПЕРСИСТЕНТНОСТЬ
-
-# ──────────────────────────────────────────
 
 def load_courses() -> dict:
 if os.path.exists(DATA_FILE):
@@ -39,12 +27,6 @@ json.dump(data, f, ensure_ascii=False, indent=2)
 
 courses: dict = load_courses()
 user_state: dict = {}
-
-# ──────────────────────────────────────────
-
-# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
-
-# ──────────────────────────────────────────
 
 def is_admin(user_id: int) -> bool:
 return user_id == ADMIN_ID
@@ -91,12 +73,6 @@ keyboard.append([InlineKeyboardButton("⬅️ Назад", callback_data="back_c
 return InlineKeyboardMarkup(keyboard)
 ```
 
-# ──────────────────────────────────────────
-
-# КОМАНДЫ
-
-# ──────────────────────────────────────────
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 if not courses:
 await update.message.reply_text(“Курсов пока нет. Заходите позже!”)
@@ -124,9 +100,7 @@ return
 args = context.args
 if not args:
 course_list = “\n”.join(f”• {c}” for c in courses) or “Нет курсов”
-await update.message.reply_text(
-f”Использование: /deletecourse <название>\n\nКурсы:\n{course_list}”
-)
+await update.message.reply_text(f”Использование: /deletecourse <название>\n\nКурсы:\n{course_list}”)
 return
 course = “ “.join(args)
 if course not in courses:
@@ -161,11 +135,13 @@ del courses[course][book]
 save_courses(courses)
 await update.message.reply_text(f”Книга «{book}» удалена из курса «{course}».”)
 
-# ──────────────────────────────────────────
-
-# CALLBACK HANDLERS
-
-# ──────────────────────────────────────────
+async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+user_id = update.message.from_user.id
+if user_id in user_state:
+del user_state[user_id]
+await update.message.reply_text(“Действие отменено.”)
+else:
+await update.message.reply_text(“Нечего отменять.”)
 
 async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 query = update.callback_query
@@ -173,20 +149,17 @@ await query.answer()
 data = query.data
 
 ```
-# Навигация по страницам курсов
 if data.startswith("coursepage|"):
     page = int(data.split("|")[1])
     await query.edit_message_text("Выберите курс:", reply_markup=courses_keyboard(page))
 
-# Выбор курса
 elif data.startswith("course|"):
     _, course, page_str = data.split("|", 2)
     page = int(page_str)
     if course not in courses:
         await query.edit_message_text("Курс не найден.")
         return
-    books = courses[course]
-    if not books:
+    if not courses[course]:
         await query.edit_message_text(
             f"В курсе «{course}» пока нет книг.",
             reply_markup=InlineKeyboardMarkup(
@@ -198,7 +171,6 @@ elif data.startswith("course|"):
         f"Книги курса «{course}»:", reply_markup=books_keyboard(course, page)
     )
 
-# Навигация по страницам книг
 elif data.startswith("bookpage|"):
     _, course, page_str = data.split("|", 2)
     page = int(page_str)
@@ -206,7 +178,6 @@ elif data.startswith("bookpage|"):
         f"Книги курса «{course}»:", reply_markup=books_keyboard(course, page)
     )
 
-# Отправка книги
 elif data.startswith("book|"):
     _, course, book = data.split("|", 2)
     if course not in courses or book not in courses[course]:
@@ -223,19 +194,12 @@ elif data.startswith("book|"):
         logger.error("Ошибка отправки файла: %s", e)
         await query.message.reply_text("Не удалось отправить файл. Попробуйте позже.")
 
-# Назад к списку курсов
 elif data == "back_courses":
     if not courses:
         await query.edit_message_text("Курсов пока нет.")
         return
     await query.edit_message_text("Выберите курс:", reply_markup=courses_keyboard())
 ```
-
-# ──────────────────────────────────────────
-
-# TEXT / FILE HANDLERS
-
-# ──────────────────────────────────────────
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 user_id = update.message.from_user.id
@@ -266,7 +230,7 @@ elif step == "adding_book_course":
         return
     state["course"] = course
     state["step"] = "adding_book_name"
-    await update.message.reply_text("Введите название книги (оно будет отображаться в боте):")
+    await update.message.reply_text("Введите название книги:")
 
 elif step == "adding_book_name":
     name = update.message.text.strip()
@@ -293,20 +257,6 @@ save_courses(courses)
 del user_state[user_id]
 await update.message.reply_text(f"Книга «{book_name}» добавлена в курс «{course}» ✅")
 ```
-
-async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-user_id = update.message.from_user.id
-if user_id in user_state:
-del user_state[user_id]
-await update.message.reply_text(“Действие отменено.”)
-else:
-await update.message.reply_text(“Нечего отменять.”)
-
-# ──────────────────────────────────────────
-
-# ЗАПУСК
-
-# ──────────────────────────────────────────
 
 app = ApplicationBuilder().token(TOKEN).build()
 
