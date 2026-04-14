@@ -7,8 +7,16 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# ========== ВОТ ЭТИ ДВЕ СТРОЧКИ БЫЛИ ПРОПУЩЕНЫ! ==========
-bot = Bot(token="8657476988:AAH1HZZDIw2ZmTOrAZS_RpgTiYwVPl0iPoI")  # ← ВСТАВЬ СВОЙ ТОКЕН СЮДА
+# ========== БЕРЁМ ТОКЕН ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+
+# Проверка: если токен не найден — бот не запустится
+if not BOT_TOKEN:
+    print("❌ Ошибка: BOT_TOKEN не найден в переменных Railway!")
+    exit(1)
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 # ========================================================
 
@@ -22,17 +30,6 @@ class AdminStates(StatesGroup):
 
 # --- Загрузка/сохранение данных ---
 DATA_FILE = "data.json"
-CONFIG_FILE = "config.json"
-
-def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        return {"bot_token": None, "admin_id": None}
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
-
-def save_config(config):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
 
 def load_data():
     if not os.path.exists(DATA_FILE):
@@ -57,22 +54,11 @@ def back_button():
 
 # --- Проверка админа ---
 def is_admin(user_id):
-    config = load_config()
-    return config.get("admin_id") == user_id
+    return user_id == ADMIN_ID
 
 # --- Старт ---
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    config = load_config()
-    
-    # Если бот еще не настроен
-    if not config["bot_token"] or config["bot_token"] == "SETUP_COMPLETE":
-        config["bot_token"] = "SETUP_COMPLETE"
-        config["admin_id"] = message.from_user.id
-        save_config(config)
-        await message.answer("✅ Бот настроен! Вы стали администратором.\n\nТеперь нужно:\n1. Отредактировать config.json\n2. Вставить туда токен от @BotFather\n3. Перезапустить бота")
-        return
-    
     data = load_data()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     
