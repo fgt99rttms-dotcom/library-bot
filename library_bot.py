@@ -1,13 +1,11 @@
+import asyncio
 import json
 import os
-import asyncio
 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-
-# ================= CONFIG =================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
@@ -39,14 +37,9 @@ def is_admin(uid):
     return uid == ADMIN_ID
 
 
-# ================= MEMORY (FSM REPLACEMENT) =================
-
-USER_STATE = {}   # временные шаги админа
-
-
 # ================= KEYBOARD =================
 
-def main_kb(uid):
+def main_kb(user_id):
     data = load_data()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
@@ -59,9 +52,13 @@ def main_kb(uid):
             )
         ])
 
-    if is_admin(uid):
+    if is_admin(user_id):
         kb.inline_keyboard.append([
-            InlineKeyboardButton("⚙️ Admin", callback_data="admin")
+            InlineKeyboardButton("➕ Add course", callback_data="add_course")
+        ])
+
+        kb.inline_keyboard.append([
+            InlineKeyboardButton("🗑 Delete course", callback_data="del_menu")
         ])
 
     return kb
@@ -71,150 +68,44 @@ def main_kb(uid):
 
 @dp.message(Command("start"))
 async def start(m: types.Message):
-    await m.answer("📚 LMS BOT v1", reply_markup=main_kb(m.from_user.id))
-
-
-# ================= ADMIN PANEL =================
-
-@dp.callback_query(F.data == "admin")
-async def admin(c: types.CallbackQuery):
-
-    if not is_admin(c.from_user.id):
-        return await c.answer("No access", show_alert=True)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("➕ Add course", callback_data="add_course")],
-        [InlineKeyboardButton("🗑 Delete course", callback_data="del_course")],
-        [InlineKeyboardButton("⬅️ Back", callback_data="back")]
-    ])
-
-    await c.message.edit_text("⚙️ Admin panel", reply_markup=kb)
+    await m.answer("📚 BOT WORKING", reply_markup=main_kb(m.from_user.id))
 
 
 # ================= ADD COURSE =================
 
 @dp.callback_query(F.data == "add_course")
 async def add_course(c: types.CallbackQuery):
-    USER_STATE[c.from_user.id] = {"step": "course_name"}
-    await c.message.edit_text("Enter course name:")
+    if not is_admin(c.from_user.id):
+        return await c.answer("No access", show_alert=True)
+
+    await c.message.answer("Send course name now")
+
+    dp.add_handler(temp_course_name)
 
 
-@dp.message()
-async def text_router(m: types.Message):
-
-    uid = m.from_user.id
-
-    if uid not in USER_STATE:
+async def temp_course_name(m: types.Message):
+    if not is_admin(m.from_user.id):
         return
-
-    state = USER_STATE[uid]
-
-    # ========== COURSE NAME ==========
-    if state["step"] == "course_name":
-
-        data = load_data()
-
-        course_id = str(int(max(data["courses"].keys(), default="0")) + 1)
-
-        data["courses"][course_id] = {
-            "name": m.text,
-            "subjects": {}
-        }
-
-        save_data(data)
-
-        USER_STATE.pop(uid)
-
-        await m.answer("✅ Course added")
-
-    # ========== SUBJECT NAME ==========
-    elif state["step"] == "subject_name":
-
-        state["subject_name"] = m.text
-        state["step"] = "subject_file"
-
-        await m.answer("Send PDF file")
-
-
-# ================= FILE UPLOAD =================
-
-@dp.message(F.document)
-async def file_handler(m: types.Message):
-
-    uid = m.from_user.id
-
-    if uid not in USER_STATE:
-        return
-
-    state = USER_STATE[uid]
-
-    if state.get("step") != "subject_file":
-        return
-
-    data_fsm = state["data"]
-
-    cid = data_fsm["course_id"]
-    subject = state["subject_name"]
-
-    os.makedirs("pdf", exist_ok=True)
-
-    path = f"pdf/{cid}_{subject}.pdf"
-
-    file = await bot.get_file(m.document.file_id)
-    await bot.download_file(file.file_path, path)
 
     data = load_data()
-    data["courses"][cid]["subjects"][subject] = path
+
+    cid = str(int(max(data["courses"].keys(), default="0")) + 1)
+
+    data["courses"][cid] = {
+        "name": m.text,
+        "subjects": {}
+    }
+
     save_data(data)
 
-    USER_STATE.pop(uid)
+    await m.answer("Course added")
 
-    await m.answer("✅ Saved")
-
-
-# ================= COURSE VIEW =================
-
-@dp.callback_query(F.data.startswith("course:"))
-async def course(c: types.CallbackQuery):
-
-    cid = c.data.split(":")[1]
-    data = load_data()
-
-    course = data["courses"].get(cid)
-
-    if not course:
-        return await c.answer("Not found", show_alert=True)
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-
-    for s in course["subjects"]:
-        kb.inline_keyboard.append([
-            InlineKeyboardButton(s, callback_data=f"file:{cid}:{s}")
-        ])
-
-    await c.message.edit_text(course["name"], reply_markup=kb)
-
-
-# ================= FILE =================
-
-@dp.callback_query(F.data.startswith("file:"))
-async def file(c: types.CallbackQuery):
-
-    _, cid, subject = c.data.split(":")
-
-    data = load_data()
-
-    path = data["courses"][cid]["subjects"].get(subject)
-
-    if not path or not os.path.exists(path):
-        return await c.answer("File not found", show_alert=True)
-
-    await c.message.answer_document(types.FSInputFile(path))
+    dp.message.unregister(temp_course_name)
 
 
 # ================= DELETE COURSE =================
 
-@dp.callback_query(F.data == "del_course")
+@dp.callback_query(F.data == "del_menu")
 async def del_menu(c: types.CallbackQuery):
 
     data = load_data()
@@ -229,7 +120,7 @@ async def del_menu(c: types.CallbackQuery):
             )
         ])
 
-    await c.message.edit_text("Select course:", reply_markup=kb)
+    await c.message.edit_text("Select:", reply_markup=kb)
 
 
 @dp.callback_query(F.data.startswith("del:"))
@@ -240,28 +131,35 @@ async def delete(c: types.CallbackQuery):
     data = load_data()
 
     if cid in data["courses"]:
-
-        for f in data["courses"][cid]["subjects"].values():
-            if os.path.exists(f):
-                os.remove(f)
-
         del data["courses"][cid]
         save_data(data)
 
     await c.message.edit_text("Deleted")
 
 
-# ================= BACK =================
+# ================= COURSE VIEW =================
 
-@dp.callback_query(F.data == "back")
-async def back(c: types.CallbackQuery):
-    await c.message.edit_text("📚 Menu", reply_markup=main_kb(c.from_user.id))
+@dp.callback_query(F.data.startswith("course:"))
+async def course(c: types.CallbackQuery):
+
+    cid = c.data.split(":")[1]
+
+    data = load_data()
+
+    course = data["courses"].get(cid)
+
+    if not course:
+        return await c.answer("Not found", show_alert=True)
+
+    await c.message.edit_text(
+        f"📚 {course['name']}"
+    )
 
 
 # ================= RUN =================
 
 async def main():
-    print("BOT v1 RUNNING")
+    print("BOT RUNNING FIXED VERSION")
     await dp.start_polling(bot)
 
 
