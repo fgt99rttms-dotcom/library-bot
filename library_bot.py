@@ -14,7 +14,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())  # ← dp определён здесь
+dp = Dispatcher(storage=MemoryStorage())
 
 DB_FILE = "db.json"
 
@@ -48,19 +48,18 @@ class AddPDF(StatesGroup):
     subject = State()
     file = State()
 
+class DeleteItem(StatesGroup):
+    level = State()
+    course = State()
+    subject = State()
+    pdf_index = State()
+
 
 # ================= UI KEYBOARDS =================
 def main_menu():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Курсы", callback_data="menu_courses")],
         [InlineKeyboardButton(text="⚙️ Админ", callback_data="menu_admin")]
-    ])
-
-
-def back_kb(back_to):
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_to)],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
     ])
 
 
@@ -88,6 +87,7 @@ def admin_kb():
         [InlineKeyboardButton(text="➕ Добавить курс", callback_data="admin|add_course")],
         [InlineKeyboardButton(text="📚 Добавить предмет", callback_data="admin|add_subject")],
         [InlineKeyboardButton(text="📎 Загрузить PDF", callback_data="admin|add_pdf")],
+        [InlineKeyboardButton(text="🗑️ Удалить", callback_data="admin|delete")],
         [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
     ])
 
@@ -269,6 +269,214 @@ async def save_pdf(m: Message, state: FSMContext):
 
     await state.clear()
     await m.answer("📎 PDF сохранён")
+
+
+# ================= ADMIN: DELETE MENU =================
+@dp.callback_query(F.data == "admin|delete")
+async def delete_menu(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("⛔ Нет доступа", show_alert=True)
+    
+    await state.set_state(DeleteItem.level)
+    await state.update_data(level="course")
+    
+    db = load_db()
+    if not db["courses"]:
+        await call.message.answer("📭 Нет ни одного курса для удаления")
+        await state.clear()
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📚 Удалить курс", callback_data="delete_type|course")],
+        [InlineKeyboardButton(text="📖 Удалить предмет", callback_data="delete_type|subject")],
+        [InlineKeyboardButton(text="📄 Удалить PDF", callback_data="delete_type|pdf")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_admin")]
+    ])
+    
+    await call.message.edit_text("🗑️ Что хотите удалить?", reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("delete_type|"))
+async def delete_type(call: CallbackQuery, state: FSMContext):
+    delete_type = call.data.split("|")[1]
+    await state.update_data(delete_type=delete_type)
+    
+    db = load_db()
+    
+    if delete_type == "course":
+        if not db["courses"]:
+            await call.message.answer("📭 Нет курсов для удаления")
+            return
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
+        for course in db["courses"]:
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ {course}", callback_data=f"delete_course|{course}")])
+        kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|delete")])
+        
+        await call.message.edit_text("🗑️ Выберите курс для удаления:", reply_markup=kb)
+    
+    elif delete_type == "subject":
+        if not db["courses"]:
+            await call.message.answer("📭 Нет курсов с предметами")
+            return
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
+        for course in db["courses"]:
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"📚 {course}", callback_data=f"delete_subject_course|{course}")])
+        kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|delete")])
+        
+        await call.message.edit_text("🗑️ Выберите курс, из которого удалить предмет:", reply_markup=kb)
+    
+    elif delete_type == "pdf":
+        if not db["courses"]:
+            await call.message.answer("📭 Нет курсов с PDF")
+            return
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[])
+        for course in db["courses"]:
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"📚 {course}", callback_data=f"delete_pdf_course|{course}")])
+        kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|delete")])
+        
+        await call.message.edit_text("🗑️ Выберите курс, из которого удалить PDF:", reply_markup=kb)
+    
+    await call.answer()
+
+
+# ================= DELETE COURSE =================
+@dp.callback_query(F.data.startswith("delete_course|"))
+async def delete_course(call: CallbackQuery, state: FSMContext):
+    course = call.data.split("|", 1)[1]
+    
+    db = load_db()
+    if course in db["courses"]:
+        del db["courses"][course]
+        save_db(db)
+        await call.message.answer(f"✅ Курс «{course}» удалён")
+    else:
+        await call.message.answer(f"❌ Курс «{course}» не найден")
+    
+    await state.clear()
+    await menu_admin(call)
+
+
+# ================= DELETE SUBJECT =================
+@dp.callback_query(F.data.startswith("delete_subject_course|"))
+async def delete_subject_choose_course(call: CallbackQuery, state: FSMContext):
+    course = call.data.split("|", 1)[1]
+    await state.update_data(delete_course=course)
+    
+    db = load_db()
+    subjects = db["courses"].get(course, {})
+    
+    if not subjects:
+        await call.message.answer(f"📭 В курсе «{course}» нет предметов")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for subject in subjects:
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ {subject}", callback_data=f"delete_subject|{course}|{subject}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|delete")])
+    
+    await call.message.edit_text(f"🗑️ Выберите предмет для удаления из курса «{course}»:", reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("delete_subject|"))
+async def delete_subject(call: CallbackQuery, state: FSMContext):
+    _, course, subject = call.data.split("|", 2)
+    
+    db = load_db()
+    if course in db["courses"] and subject in db["courses"][course]:
+        del db["courses"][course][subject]
+        
+        if not db["courses"][course]:
+            del db["courses"][course]
+            save_db(db)
+            await call.message.answer(f"✅ Предмет «{subject}» удалён. Курс «{course}» тоже удалён (стал пустым)")
+        else:
+            save_db(db)
+            await call.message.answer(f"✅ Предмет «{subject}» удалён из курса «{course}»")
+    else:
+        await call.message.answer(f"❌ Предмет или курс не найден")
+    
+    await state.clear()
+    await menu_admin(call)
+
+
+# ================= DELETE PDF =================
+@dp.callback_query(F.data.startswith("delete_pdf_course|"))
+async def delete_pdf_choose_course(call: CallbackQuery, state: FSMContext):
+    course = call.data.split("|", 1)[1]
+    await state.update_data(delete_course=course)
+    
+    db = load_db()
+    subjects = db["courses"].get(course, {})
+    
+    if not subjects:
+        await call.message.answer(f"📭 В курсе «{course}» нет предметов с PDF")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for subject in subjects:
+        if subjects[subject]:
+            kb.inline_keyboard.append([InlineKeyboardButton(text=f"📄 {subject}", callback_data=f"delete_pdf_subject|{course}|{subject}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|delete")])
+    
+    if not kb.inline_keyboard:
+        await call.message.answer(f"📭 В курсе «{course}» нет PDF-файлов для удаления")
+        return
+    
+    await call.message.edit_text(f"🗑️ Выберите предмет, из которого удалить PDF (курс «{course}»):", reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("delete_pdf_subject|"))
+async def delete_pdf_choose_file(call: CallbackQuery, state: FSMContext):
+    _, course, subject = call.data.split("|", 2)
+    await state.update_data(delete_course=course, delete_subject=subject)
+    
+    db = load_db()
+    files = db["courses"][course][subject]
+    
+    if not files:
+        await call.message.answer(f"📭 В предмете «{subject}» нет PDF-файлов")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for idx, file_id in enumerate(files):
+        kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ PDF #{idx+1}", callback_data=f"delete_pdf_file|{course}|{subject}|{idx}")])
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"delete_pdf_course|{course}")])
+    
+    await call.message.edit_text(f"🗑️ Выберите PDF для удаления из предмета «{subject}»:", reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("delete_pdf_file|"))
+async def delete_pdf_file(call: CallbackQuery, state: FSMContext):
+    _, course, subject, idx = call.data.split("|", 3)
+    idx = int(idx)
+    
+    db = load_db()
+    files = db["courses"][course][subject]
+    
+    if 0 <= idx < len(files):
+        files.pop(idx)
+        
+        if not files:
+            del db["courses"][course][subject]
+            if not db["courses"][course]:
+                del db["courses"][course]
+            save_db(db)
+            await call.message.answer(f"✅ PDF удалён. Предмет «{subject}» удалён (стал пустым)")
+        else:
+            save_db(db)
+            await call.message.answer(f"✅ PDF удалён из предмета «{subject}»")
+    else:
+        await call.message.answer(f"❌ PDF не найден")
+    
+    await state.clear()
+    await menu_admin(call)
 
 
 # ================= RUN =================
