@@ -8,14 +8,16 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
+
 # ================= CONFIG =================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
+OWNER_ID = int(os.getenv("OWNER_ID"))  # Владелец бота (создатель)
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 DB_FILE = "db.json"
+ADMINS_FILE = "admins.json"  # Файл для хранения списка админов
 
 
 # ================= DB =================
@@ -34,6 +36,59 @@ def save_db(data):
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 
+# ================= ADMINS MANAGEMENT =================
+def load_admins():
+    if not os.path.exists(ADMINS_FILE):
+        data = {"admins": [OWNER_ID]}  # Владелец автоматически админ
+        save_admins(data)
+        return data
+    
+    with open(ADMINS_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def save_admins(data):
+    with open(ADMINS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def is_admin(user_id):
+    """Проверяет, является ли пользователь админом"""
+    admins = load_admins()
+    return user_id in admins["admins"]
+
+
+def is_owner(user_id):
+    """Проверяет, является ли пользователь владельцем"""
+    return user_id == OWNER_ID
+
+
+def add_admin(user_id):
+    """Добавляет админа"""
+    admins = load_admins()
+    if user_id not in admins["admins"]:
+        admins["admins"].append(user_id)
+        save_admins(admins)
+        return True
+    return False
+
+
+def remove_admin(user_id):
+    """Удаляет админа"""
+    admins = load_admins()
+    if user_id in admins["admins"] and user_id != OWNER_ID:  # Владельца нельзя удалить
+        admins["admins"].remove(user_id)
+        save_admins(admins)
+        return True
+    return False
+
+
+def get_admins_list():
+    """Возвращает список админов"""
+    admins = load_admins()
+    return admins["admins"]
+
+
 # ================= STATES =================
 class AddCourse(StatesGroup):
     name = State()
@@ -46,7 +101,7 @@ class AddPDF(StatesGroup):
     course = State()
     subject = State()
     file = State()
-    continue_adding = State()  # Новое состояние для продолжения добавления
+    continue_adding = State()
 
 class DeleteItem(StatesGroup):
     level = State()
@@ -54,13 +109,17 @@ class DeleteItem(StatesGroup):
     subject = State()
     pdf_index = State()
 
+class AdminManagement(StatesGroup):
+    action = State()
+    user_id = State()
+
 
 # ================= UI KEYBOARDS =================
 def main_menu(user_id):
     kb = [[InlineKeyboardButton(text="📚 Курсы", callback_data="menu_courses")]]
     
-    # Кнопка админа видна только админу
-    if user_id == ADMIN_ID:
+    # Кнопка админа видна только админам
+    if is_admin(user_id):
         kb.append([InlineKeyboardButton(text="⚙️ Админ", callback_data="menu_admin")])
     
     return InlineKeyboardMarkup(inline_keyboard=kb)
@@ -85,14 +144,21 @@ def subjects_kb(course, subjects):
     return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
-def admin_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
+def admin_kb(user_id):
+    kb = [
         [InlineKeyboardButton(text="➕ Добавить курс", callback_data="admin|add_course")],
         [InlineKeyboardButton(text="📚 Добавить предмет", callback_data="admin|add_subject")],
         [InlineKeyboardButton(text="📎 Загрузить PDF", callback_data="admin|add_pdf")],
-        [InlineKeyboardButton(text="🗑️ Удалить", callback_data="admin|delete")],
-        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
-    ])
+        [InlineKeyboardButton(text="🗑️ Удалить", callback_data="admin|delete")]
+    ]
+    
+    # Управление админами доступно только владельцу
+    if is_owner(user_id):
+        kb.append([InlineKeyboardButton(text="👥 Управление админами", callback_data="admin|manage_admins")])
+    
+    kb.append([InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def pdf_continue_kb():
@@ -102,10 +168,25 @@ def pdf_continue_kb():
     ])
 
 
+def admins_management_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить админа", callback_data="admin|add_admin")],
+        [InlineKeyboardButton(text="➖ Удалить админа", callback_data="admin|remove_admin")],
+        [InlineKeyboardButton(text="📋 Список админов", callback_data="admin|list_admins")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_admin")]
+    ])
+
+
 # ================= START =================
 @dp.message(Command("start"))
 async def start(m: Message):
-    await m.answer("📱 Мини-библиотека", reply_markup=main_menu(m.from_user.id))
+    user_id = m.from_user.id
+    welcome_text = f"📱 Мини-библиотека\n\nПривет, {m.from_user.first_name}!"
+    
+    if is_admin(user_id):
+        welcome_text += "\n\n✅ Вы имеете доступ к админ-панели"
+    
+    await m.answer(welcome_text, reply_markup=main_menu(user_id))
 
 
 # ================= NAVIGATION =================
@@ -122,11 +203,143 @@ async def menu_courses(call: CallbackQuery):
 
 @dp.callback_query(F.data == "menu_admin")
 async def menu_admin(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         await call.answer("⛔ Нет доступа", show_alert=True)
         return
 
-    await call.message.edit_text("⚙️ Админ панель", reply_markup=admin_kb())
+    await call.message.edit_text("⚙️ Админ панель", reply_markup=admin_kb(call.from_user.id))
+
+
+# ================= ADMIN MANAGEMENT =================
+@dp.callback_query(F.data == "admin|manage_admins")
+async def manage_admins(call: CallbackQuery):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ Только владелец бота может управлять админами", show_alert=True)
+        return
+    
+    await call.message.edit_text("👥 Управление администраторами", reply_markup=admins_management_kb())
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admin|add_admin")
+async def add_admin_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    
+    await state.set_state(AdminManagement.user_id)
+    await state.update_data(action="add")
+    await call.message.answer("📝 Введите Telegram ID пользователя, которого хотите сделать админом:\n\n(Можно переслать любое сообщение от этого пользователя, чтобы получить его ID)")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "admin|remove_admin")
+async def remove_admin_start(call: CallbackQuery, state: FSMContext):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    
+    admins = get_admins_list()
+    if len(admins) <= 1:
+        await call.message.answer("⚠️ Нельзя удалить единственного админа (владельца)")
+        return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    for admin_id in admins:
+        if admin_id != OWNER_ID:  # Владельца нельзя удалить
+            try:
+                user = await bot.get_chat(admin_id)
+                name = user.first_name
+                kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ {name} ({admin_id})", callback_data=f"remove_admin_id|{admin_id}")])
+            except:
+                kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ ID: {admin_id}", callback_data=f"remove_admin_id|{admin_id}")])
+    
+    kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|manage_admins")])
+    
+    await call.message.edit_text("🗑️ Выберите админа для удаления:", reply_markup=kb)
+    await call.answer()
+
+
+@dp.callback_query(F.data.startswith("remove_admin_id|"))
+async def remove_admin_by_id(call: CallbackQuery):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    
+    admin_id = int(call.data.split("|")[1])
+    
+    if remove_admin(admin_id):
+        await call.message.answer(f"✅ Админ с ID {admin_id} удалён")
+    else:
+        await call.message.answer(f"❌ Не удалось удалить админа")
+    
+    await manage_admins(call)
+
+
+@dp.callback_query(F.data == "admin|list_admins")
+async def list_admins(call: CallbackQuery):
+    if not is_owner(call.from_user.id):
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
+    
+    admins = get_admins_list()
+    text = "👥 Список администраторов:\n\n"
+    
+    for admin_id in admins:
+        try:
+            user = await bot.get_chat(admin_id)
+            name = f"{user.first_name}"
+            if user.username:
+                name += f" (@{user.username})"
+            role = "👑 Владелец" if admin_id == OWNER_ID else "👤 Админ"
+            text += f"{role}: {name} (ID: {admin_id})\n"
+        except:
+            text += f"👤 ID: {admin_id}\n"
+    
+    text += f"\nВсего админов: {len(admins)}"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="admin|manage_admins")]
+    ])
+    
+    await call.message.edit_text(text, reply_markup=kb)
+    await call.answer()
+
+
+@dp.message(AdminManagement.user_id)
+async def process_admin_user_id(m: Message, state: FSMContext):
+    data = await state.get_data()
+    action = data.get("action")
+    
+    # Пытаемся получить ID из текста или из пересланного сообщения
+    if m.forward_from:
+        user_id = m.forward_from.id
+    else:
+        try:
+            user_id = int(m.text.strip())
+        except:
+            await m.answer("❌ Пожалуйста, введите корректный Telegram ID или перешлите сообщение от пользователя")
+            return
+    
+    if action == "add":
+        if add_admin(user_id):
+            try:
+                user = await bot.get_chat(user_id)
+                name = user.first_name
+                await m.answer(f"✅ Пользователь {name} (ID: {user_id}) теперь администратор!")
+                
+                # Отправляем уведомление новому админу
+                try:
+                    await bot.send_message(user_id, "🎉 Поздравляем! Вы были назначены администратором бота.")
+                except:
+                    pass
+            except:
+                await m.answer(f"✅ Пользователь с ID {user_id} теперь администратор!")
+        else:
+            await m.answer(f"❌ Пользователь уже является администратором")
+    
+    await state.clear()
+    await menu_admin(m)
 
 
 # ================= COURSES =================
@@ -189,7 +402,7 @@ async def open_subject(call: CallbackQuery):
 # ================= ADMIN: ADD COURSE =================
 @dp.callback_query(F.data == "admin|add_course")
 async def add_course(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return await call.answer("⛔ Нет доступа", show_alert=True)
     
     await state.set_state(AddCourse.name)
@@ -210,7 +423,7 @@ async def save_course(m: Message, state: FSMContext):
 # ================= ADMIN: ADD SUBJECT =================
 @dp.callback_query(F.data == "admin|add_subject")
 async def add_subject(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return await call.answer("⛔ Нет доступа", show_alert=True)
     
     await state.set_state(AddSubject.course)
@@ -240,10 +453,10 @@ async def save_subject(m: Message, state: FSMContext):
     await m.answer("✅ Предмет добавлен")
 
 
-# ================= ADMIN: ADD PDF (УПРОЩЕННО) =================
+# ================= ADMIN: ADD PDF =================
 @dp.callback_query(F.data == "admin|add_pdf")
 async def add_pdf(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return await call.answer("⛔ Нет доступа", show_alert=True)
     
     await state.set_state(AddPDF.course)
@@ -276,7 +489,6 @@ async def save_pdf(m: Message, state: FSMContext):
     db["courses"].setdefault(course, {})
     db["courses"][course].setdefault(subject, [])
 
-    # Сохраняем PDF
     db["courses"][course][subject].append(m.document.file_id)
     save_db(db)
 
@@ -294,14 +506,14 @@ async def pdf_continue(call: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "pdf_finish")
 async def pdf_finish(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await call.message.answer("✅ Добавление PDF завершено", reply_markup=admin_kb())
+    await call.message.answer("✅ Добавление PDF завершено", reply_markup=admin_kb(call.from_user.id))
     await call.answer()
 
 
 # ================= ADMIN: DELETE MENU =================
 @dp.callback_query(F.data == "admin|delete")
 async def delete_menu(call: CallbackQuery, state: FSMContext):
-    if call.from_user.id != ADMIN_ID:
+    if not is_admin(call.from_user.id):
         return await call.answer("⛔ Нет доступа", show_alert=True)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -463,7 +675,6 @@ async def delete_pdf_choose_file(call: CallbackQuery, state: FSMContext):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for idx, file_id in enumerate(files):
-        # Получаем информацию о файле (если нужно)
         kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ PDF #{idx+1}", callback_data=f"delete_pdf_file|{course}|{subject}|{idx}")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"delete_pdf_course|{course}")])
     
@@ -501,6 +712,9 @@ async def delete_pdf_file(call: CallbackQuery, state: FSMContext):
 # ================= RUN =================
 async def main():
     print("BOT STARTED")
+    print(f"Owner ID: {OWNER_ID}")
+    admins = get_admins_list()
+    print(f"Admins: {admins}")
     await dp.start_polling(bot)
 
 
