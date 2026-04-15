@@ -19,35 +19,15 @@ dp = Dispatcher(storage=MemoryStorage())
 DB_FILE = "db.json"
 
 
-# ================= DB INIT =================
-def create_default_db():
-    data = {
-        "courses": {
-            "1 курс": {
-                "Анатомия": [],
-                "Физиология": []
-            },
-            "2 курс": {
-                "Биохимия": []
-            }
-        }
-    }
-    with open(DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-    return data
-
-
+# ================= DB =================
 def load_db():
     if not os.path.exists(DB_FILE):
-        return create_default_db()
+        data = {"courses": {}}
+        save_db(data)
+        return data
 
     with open(DB_FILE, "r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if "courses" not in data:
-        return create_default_db()
-
-    return data
+        return json.load(f)
 
 
 def save_db(data):
@@ -69,54 +49,103 @@ class AddPDF(StatesGroup):
     file = State()
 
 
-# ================= KEYBOARDS =================
+# ================= UI KEYBOARDS =================
+def main_menu():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📚 Курсы", callback_data="menu_courses")],
+        [InlineKeyboardButton(text="⚙️ Админ", callback_data="menu_admin")]
+    ])
+
+
+def back_kb(back_to):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data=back_to)],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
+    ])
+
+
 def courses_kb(db):
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    kb = []
+    for c in db["courses"]:
+        kb.append([InlineKeyboardButton(text=c, callback_data=f"course:{c}")])
 
-    for course in db["courses"].keys():
-        kb.inline_keyboard.append([
-            InlineKeyboardButton(text=course, callback_data=f"course:{course}")
-        ])
-
-    return kb
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="home")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def subjects_kb(course, subjects):
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
+    kb = []
+    for s in subjects:
+        kb.append([InlineKeyboardButton(text=s, callback_data=f"subject:{course}:{s}")])
 
-    for s in subjects.keys():
-        kb.inline_keyboard.append([
-            InlineKeyboardButton(text=s, callback_data=f"subject:{course}:{s}")
-        ])
-
-    return kb
+    kb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="menu_courses")])
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def admin_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Добавить курс", callback_data="add_course")],
         [InlineKeyboardButton(text="📚 Добавить предмет", callback_data="add_subject")],
-        [InlineKeyboardButton(text="📎 Загрузить PDF", callback_data="add_pdf")]
+        [InlineKeyboardButton(text="📎 Загрузить PDF", callback_data="add_pdf")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="home")]
     ])
 
 
 # ================= START =================
 @dp.message(Command("start"))
 async def start(m: Message):
+    await m.answer("📱 Мини-библиотека", reply_markup=main_menu())
+
+
+# ================= NAVIGATION =================
+@dp.callback_query(F.data == "home")
+async def home(call: CallbackQuery):
+    await call.message.edit_text("📱 Главное меню", reply_markup=main_menu())
+
+
+@dp.callback_query(F.data == "menu_courses")
+async def menu_courses(call: CallbackQuery):
     db = load_db()
-    await m.answer("📚 Выберите курс:", reply_markup=courses_kb(db))
+    await call.message.edit_text("📚 Курсы:", reply_markup=courses_kb(db))
 
 
-# ================= ADMIN =================
-@dp.message(Command("admin"))
-async def admin(m: Message):
-    if m.from_user.id != ADMIN_ID:
-        return await m.answer("⛔ Нет доступа")
+@dp.callback_query(F.data == "menu_admin")
+async def menu_admin(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("⛔ Нет доступа", show_alert=True)
 
-    await m.answer("⚙️ Админ панель", reply_markup=admin_kb())
+    await call.message.edit_text("⚙️ Админ панель", reply_markup=admin_kb())
 
 
-# ================= ADD COURSE =================
+# ================= COURSES =================
+@dp.callback_query(F.data.startswith("course:"))
+async def open_course(call: CallbackQuery):
+    course = call.data.split(":")[1]
+    db = load_db()
+
+    subjects = db["courses"].get(course, {})
+
+    await call.message.edit_text(
+        f"📘 {course}",
+        reply_markup=subjects_kb(course, subjects)
+    )
+
+
+# ================= SUBJECT =================
+@dp.callback_query(F.data.startswith("subject:"))
+async def open_subject(call: CallbackQuery):
+    _, course, subject = call.data.split(":")
+    db = load_db()
+
+    files = db["courses"][course][subject]
+
+    await call.message.answer(f"📂 {subject}")
+
+    for file_id in files:
+        await bot.send_document(call.message.chat.id, file_id)
+
+
+# ================= ADMIN: ADD COURSE =================
 @dp.callback_query(F.data == "add_course")
 async def add_course(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddCourse.name)
@@ -133,7 +162,7 @@ async def save_course(m: Message, state: FSMContext):
     await m.answer("✅ Курс добавлен")
 
 
-# ================= ADD SUBJECT =================
+# ================= ADMIN: ADD SUBJECT =================
 @dp.callback_query(F.data == "add_subject")
 async def add_subject(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddSubject.course)
@@ -153,18 +182,16 @@ async def save_subject(m: Message, state: FSMContext):
     course = data["course"]
 
     db = load_db()
-
-    if course not in db["courses"]:
-        db["courses"][course] = {}
-
+    db["courses"].setdefault(course, {})
     db["courses"][course][m.text] = []
+
     save_db(db)
 
     await state.clear()
     await m.answer("✅ Предмет добавлен")
 
 
-# ================= ADD PDF =================
+# ================= ADMIN: ADD PDF =================
 @dp.callback_query(F.data == "add_pdf")
 async def add_pdf(call: CallbackQuery, state: FSMContext):
     await state.set_state(AddPDF.course)
@@ -191,44 +218,15 @@ async def save_pdf(m: Message, state: FSMContext):
     course = data["course"]
     subject = data["subject"]
 
-    file_id = m.document.file_id
-
     db = load_db()
     db["courses"].setdefault(course, {})
     db["courses"][course].setdefault(subject, [])
-    db["courses"][course][subject].append(file_id)
 
+    db["courses"][course][subject].append(m.document.file_id)
     save_db(db)
 
     await state.clear()
     await m.answer("📎 PDF сохранён")
-
-
-# ================= NAVIGATION =================
-@dp.callback_query(F.data.startswith("course:"))
-async def open_course(call: CallbackQuery):
-    course = call.data.split(":")[1]
-    db = load_db()
-
-    subjects = db["courses"].get(course, {})
-
-    await call.message.edit_text(
-        f"📘 {course}",
-        reply_markup=subjects_kb(course, subjects)
-    )
-
-
-@dp.callback_query(F.data.startswith("subject:"))
-async def open_subject(call: CallbackQuery):
-    _, course, subject = call.data.split(":")
-
-    db = load_db()
-    files = db["courses"][course][subject]
-
-    await call.message.answer(f"📂 {subject}")
-
-    for file_id in files:
-        await bot.send_document(call.message.chat.id, file_id)
 
 
 # ================= RUN =================
