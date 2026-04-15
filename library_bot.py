@@ -15,7 +15,8 @@ if not BOT_TOKEN:
     exit(1)
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+storage = MemoryStorage()
+dp = Dispatcher(storage=storage)
 
 class AdminStates(StatesGroup):
     waiting_course_id = State()
@@ -42,7 +43,8 @@ def is_admin(user_id):
     return user_id == ADMIN_ID
 
 @dp.message(Command("start"))
-async def start(message: types.Message):
+async def start(message: types.Message, state: FSMContext):
+    await state.clear()
     data = load_data()
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     
@@ -59,7 +61,8 @@ async def start(message: types.Message):
     await message.answer("📚 Добро пожаловать!\nВыбери курс или найди книгу:", reply_markup=keyboard)
 
 @dp.callback_query(lambda c: c.data.startswith("course_"))
-async def show_subjects(callback: types.CallbackQuery):
+async def show_subjects(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     course_id = callback.data.split("_")[1]
     data = load_data()
     
@@ -85,7 +88,8 @@ async def show_subjects(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("file_"))
-async def send_pdf(callback: types.CallbackQuery):
+async def send_pdf(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     parts = callback.data.split("_")
     course_id = parts[1]
     subject_name = "_".join(parts[2:])
@@ -102,13 +106,18 @@ async def send_pdf(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "search_mode")
-async def search_mode(callback: types.CallbackQuery):
+async def search_mode(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await callback.message.edit_text("🔍 Введите название или автора книги:")
     await callback.answer()
 
 @dp.message()
-async def search_book(message: types.Message):
+async def search_book(message: types.Message, state: FSMContext):
     if message.text.startswith("/"):
+        return
+    
+    current_state = await state.get_state()
+    if current_state is not None:
         return
     
     query = message.text.lower()
@@ -127,12 +136,14 @@ async def search_book(message: types.Message):
                 await message.answer_document(pdf, caption=f"📖 {book['title']}\n✍️ {book['author']}")
 
 @dp.callback_query(lambda c: c.data == "back_to_courses")
-async def back_to_courses(callback: types.CallbackQuery):
-    await start(callback.message)
+async def back_to_courses(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await start(callback.message, state)
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_panel")
-async def admin_panel(callback: types.CallbackQuery):
+async def admin_panel(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     if not is_admin(callback.from_user.id):
         await callback.answer("Доступ запрещен", show_alert=True)
         return
@@ -164,7 +175,12 @@ async def add_course_id(message: types.Message, state: FSMContext):
 async def add_course_name(message: types.Message, state: FSMContext):
     course_name = message.text.strip()
     data = await state.get_data()
-    course_id = data["course_id"]
+    course_id = data.get("course_id")
+    
+    if not course_id:
+        await message.answer("❌ Ошибка: начните заново")
+        await state.clear()
+        return
     
     if not is_admin(message.from_user.id):
         await message.answer("❌ Нет прав")
@@ -185,7 +201,8 @@ async def add_course_name(message: types.Message, state: FSMContext):
     await state.clear()
 
 @dp.callback_query(lambda c: c.data == "admin_list_courses")
-async def list_courses(callback: types.CallbackQuery):
+async def list_courses(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     data = load_data()
     if not data["courses"]:
         await callback.message.edit_text("📭 Нет добавленных курсов")
@@ -203,7 +220,8 @@ async def list_courses(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data == "admin_delete_course")
-async def delete_course_select(callback: types.CallbackQuery):
+async def delete_course_select(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     data = load_data()
     if not data["courses"]:
         await callback.message.edit_text("📭 Нет курсов для удаления")
@@ -221,7 +239,8 @@ async def delete_course_select(callback: types.CallbackQuery):
     await callback.answer()
 
 @dp.callback_query(lambda c: c.data.startswith("delete_course_"))
-async def delete_course_confirm(callback: types.CallbackQuery):
+async def delete_course_confirm(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     course_id = callback.data.replace("delete_course_", "")
     data = load_data()
     
@@ -238,6 +257,7 @@ async def delete_course_confirm(callback: types.CallbackQuery):
 
 @dp.callback_query(lambda c: c.data == "admin_add_subject")
 async def add_subject_course(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     data = load_data()
     if not data["courses"]:
         await callback.message.edit_text("❌ Сначала добавьте курс!")
@@ -279,8 +299,13 @@ async def add_subject_file(message: types.Message, state: FSMContext):
         return
     
     data = await state.get_data()
-    course_id = data["subject_course"]
-    subject_name = data["subject_name"]
+    course_id = data.get("subject_course")
+    subject_name = data.get("subject_name")
+    
+    if not course_id or not subject_name:
+        await message.answer("❌ Ошибка: начните заново")
+        await state.clear()
+        return
     
     if not os.path.exists("pdf"):
         os.makedirs("pdf")
