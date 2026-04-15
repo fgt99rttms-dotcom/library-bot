@@ -5,9 +5,6 @@ import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
 
 
 # ================= CONFIG =================
@@ -16,7 +13,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(storage=MemoryStorage())
+dp = Dispatcher()
 
 DATA_FILE = "data.json"
 
@@ -35,26 +32,21 @@ def load_data():
 
 def save_data(data):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def is_admin(user_id):
-    return user_id == ADMIN_ID
+def is_admin(uid):
+    return uid == ADMIN_ID
 
 
-# ================= FSM =================
+# ================= MEMORY (FSM REPLACEMENT) =================
 
-class AdminFSM(StatesGroup):
-    course_name = State()
-    subject_name = State()
-    subject_file = State()
-    confirm_delete_course = State()
-    confirm_delete_subject = State()
+USER_STATE = {}   # временные шаги админа
 
 
-# ================= MAIN MENU =================
+# ================= KEYBOARD =================
 
-def main_kb(user_id):
+def main_kb(uid):
     data = load_data()
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
@@ -67,9 +59,9 @@ def main_kb(user_id):
             )
         ])
 
-    if is_admin(user_id):
+    if is_admin(uid):
         kb.inline_keyboard.append([
-            InlineKeyboardButton("⚙️ Админ", callback_data="admin")
+            InlineKeyboardButton("⚙️ Admin", callback_data="admin")
         ])
 
     return kb
@@ -78,9 +70,8 @@ def main_kb(user_id):
 # ================= START =================
 
 @dp.message(Command("start"))
-async def start(m: types.Message, state: FSMContext):
-    await state.clear()
-    await m.answer("📚 LMS v3.0", reply_markup=main_kb(m.from_user.id))
+async def start(m: types.Message):
+    await m.answer("📚 LMS BOT v1", reply_markup=main_kb(m.from_user.id))
 
 
 # ================= ADMIN PANEL =================
@@ -89,92 +80,102 @@ async def start(m: types.Message, state: FSMContext):
 async def admin(c: types.CallbackQuery):
 
     if not is_admin(c.from_user.id):
-        return await c.answer("Нет доступа", show_alert=True)
+        return await c.answer("No access", show_alert=True)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton("➕ Добавить курс", callback_data="add_course")],
-        [InlineKeyboardButton("🗑 Удалить курс", callback_data="del_course_menu")],
-        [InlineKeyboardButton("📖 Добавить предмет", callback_data="add_subject")],
-        [InlineKeyboardButton("⬅️ Назад", callback_data="back")]
+        [InlineKeyboardButton("➕ Add course", callback_data="add_course")],
+        [InlineKeyboardButton("🗑 Delete course", callback_data="del_course")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="back")]
     ])
 
-    await c.message.edit_text("⚙️ Админ-панель", reply_markup=kb)
+    await c.message.edit_text("⚙️ Admin panel", reply_markup=kb)
 
 
 # ================= ADD COURSE =================
 
 @dp.callback_query(F.data == "add_course")
-async def add_course(c: types.CallbackQuery, state: FSMContext):
-    await state.set_state(AdminFSM.course_name)
-    await c.message.edit_text("Введите название курса:")
+async def add_course(c: types.CallbackQuery):
+    USER_STATE[c.from_user.id] = {"step": "course_name"}
+    await c.message.edit_text("Enter course name:")
 
 
-@dp.message(AdminFSM.course_name)
-async def save_course(m: types.Message, state: FSMContext):
+@dp.message()
+async def text_router(m: types.Message):
 
-    data = load_data()
+    uid = m.from_user.id
 
-    course_id = str(int(max(data["courses"].keys(), default="0")) + 1)
+    if uid not in USER_STATE:
+        return
 
-    data["courses"][course_id] = {
-        "name": m.text,
-        "subjects": {}
-    }
+    state = USER_STATE[uid]
 
-    save_data(data)
+    # ========== COURSE NAME ==========
+    if state["step"] == "course_name":
 
-    await m.answer("Курс добавлен")
-    await state.clear()
+        data = load_data()
 
+        course_id = str(int(max(data["courses"].keys(), default="0")) + 1)
 
-# ================= DELETE COURSE (SAFE) =================
+        data["courses"][course_id] = {
+            "name": m.text,
+            "subjects": {}
+        }
 
-@dp.callback_query(F.data == "del_course_menu")
-async def del_course_menu(c: types.CallbackQuery):
-
-    data = load_data()
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[])
-
-    for cid, course in data["courses"].items():
-        kb.inline_keyboard.append([
-            InlineKeyboardButton(
-                text=f"❌ {course['name']}",
-                callback_data=f"del_course:{cid}"
-            )
-        ])
-
-    kb.inline_keyboard.append([
-        InlineKeyboardButton("⬅️ Назад", callback_data="admin")
-    ])
-
-    await c.message.edit_text("Выберите курс:", reply_markup=kb)
-
-
-@dp.callback_query(F.data.startswith("del_course:"))
-async def delete_course(c: types.CallbackQuery):
-
-    cid = c.data.split(":")[1]
-
-    data = load_data()
-
-    if cid in data["courses"]:
-
-        # delete files
-        for f in data["courses"][cid]["subjects"].values():
-            if os.path.exists(f):
-                os.remove(f)
-
-        del data["courses"][cid]
         save_data(data)
 
-    await c.message.edit_text("Курс удалён")
+        USER_STATE.pop(uid)
+
+        await m.answer("✅ Course added")
+
+    # ========== SUBJECT NAME ==========
+    elif state["step"] == "subject_name":
+
+        state["subject_name"] = m.text
+        state["step"] = "subject_file"
+
+        await m.answer("Send PDF file")
+
+
+# ================= FILE UPLOAD =================
+
+@dp.message(F.document)
+async def file_handler(m: types.Message):
+
+    uid = m.from_user.id
+
+    if uid not in USER_STATE:
+        return
+
+    state = USER_STATE[uid]
+
+    if state.get("step") != "subject_file":
+        return
+
+    data_fsm = state["data"]
+
+    cid = data_fsm["course_id"]
+    subject = state["subject_name"]
+
+    os.makedirs("pdf", exist_ok=True)
+
+    path = f"pdf/{cid}_{subject}.pdf"
+
+    file = await bot.get_file(m.document.file_id)
+    await bot.download_file(file.file_path, path)
+
+    data = load_data()
+    data["courses"][cid]["subjects"][subject] = path
+    save_data(data)
+
+    USER_STATE.pop(uid)
+
+    await m.answer("✅ Saved")
 
 
 # ================= COURSE VIEW =================
 
 @dp.callback_query(F.data.startswith("course:"))
-async def open_course(c: types.CallbackQuery):
+async def course(c: types.CallbackQuery):
 
     cid = c.data.split(":")[1]
     data = load_data()
@@ -182,46 +183,39 @@ async def open_course(c: types.CallbackQuery):
     course = data["courses"].get(cid)
 
     if not course:
-        return await c.answer("Нет курса", show_alert=True)
+        return await c.answer("Not found", show_alert=True)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[])
 
-    for subject in course["subjects"]:
+    for s in course["subjects"]:
         kb.inline_keyboard.append([
-            InlineKeyboardButton(
-                text=subject,
-                callback_data=f"subject:{cid}:{subject}"
-            )
+            InlineKeyboardButton(s, callback_data=f"file:{cid}:{s}")
         ])
-
-    kb.inline_keyboard.append([
-        InlineKeyboardButton("⬅️ Назад", callback_data="back")
-    ])
 
     await c.message.edit_text(course["name"], reply_markup=kb)
 
 
 # ================= FILE =================
 
-@dp.callback_query(F.data.startswith("subject:"))
-async def send_file(c: types.CallbackQuery):
+@dp.callback_query(F.data.startswith("file:"))
+async def file(c: types.CallbackQuery):
 
-    _, cid, subject = c.data.split(":", 2)
+    _, cid, subject = c.data.split(":")
 
     data = load_data()
 
     path = data["courses"][cid]["subjects"].get(subject)
 
     if not path or not os.path.exists(path):
-        return await c.answer("Файл не найден", show_alert=True)
+        return await c.answer("File not found", show_alert=True)
 
     await c.message.answer_document(types.FSInputFile(path))
 
 
-# ================= ADD SUBJECT =================
+# ================= DELETE COURSE =================
 
-@dp.callback_query(F.data == "add_subject")
-async def add_subject(c: types.CallbackQuery):
+@dp.callback_query(F.data == "del_course")
+async def del_menu(c: types.CallbackQuery):
 
     data = load_data()
 
@@ -229,70 +223,45 @@ async def add_subject(c: types.CallbackQuery):
 
     for cid, course in data["courses"].items():
         kb.inline_keyboard.append([
-            InlineKeyboardButton(course["name"], callback_data=f"pick:{cid}")
+            InlineKeyboardButton(
+                f"❌ {course['name']}",
+                callback_data=f"del:{cid}"
+            )
         ])
 
-    await c.message.edit_text("Выберите курс:", reply_markup=kb)
+    await c.message.edit_text("Select course:", reply_markup=kb)
 
 
-@dp.callback_query(F.data.startswith("pick:"))
-async def pick_course(c: types.CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("del:"))
+async def delete(c: types.CallbackQuery):
 
     cid = c.data.split(":")[1]
 
-    await state.update_data(course_id=cid)
-    await state.set_state(AdminFSM.subject_name)
-
-    await c.message.edit_text("Название предмета?")
-
-
-@dp.message(AdminFSM.subject_name)
-async def subject_name(m: types.Message, state: FSMContext):
-
-    await state.update_data(subject_name=m.text)
-    await state.set_state(AdminFSM.subject_file)
-
-    await m.answer("Отправьте PDF")
-
-
-@dp.message(AdminFSM.subject_file)
-async def save_pdf(m: types.Message, state: FSMContext):
-
-    if not m.document:
-        return await m.answer("PDF нужен")
-
-    data_fsm = await state.get_data()
-
-    cid = data_fsm["course_id"]
-    name = data_fsm["subject_name"]
-
-    os.makedirs("pdf", exist_ok=True)
-
-    path = f"pdf/{cid}_{name}.pdf"
-
-    file = await bot.get_file(m.document.file_id)
-    await bot.download_file(file.file_path, path)
-
     data = load_data()
-    data["courses"][cid]["subjects"][name] = path
-    save_data(data)
 
-    await m.answer("Сохранено")
-    await state.clear()
+    if cid in data["courses"]:
+
+        for f in data["courses"][cid]["subjects"].values():
+            if os.path.exists(f):
+                os.remove(f)
+
+        del data["courses"][cid]
+        save_data(data)
+
+    await c.message.edit_text("Deleted")
 
 
 # ================= BACK =================
 
 @dp.callback_query(F.data == "back")
-async def back(c: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await c.message.edit_text("📚 Меню", reply_markup=main_kb(c.from_user.id))
+async def back(c: types.CallbackQuery):
+    await c.message.edit_text("📚 Menu", reply_markup=main_kb(c.from_user.id))
 
 
 # ================= RUN =================
 
 async def main():
-    print("BOT v3.0 RUNNING")
+    print("BOT v1 RUNNING")
     await dp.start_polling(bot)
 
 
