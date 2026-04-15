@@ -47,6 +47,7 @@ class AddPDF(StatesGroup):
     course = State()
     subject = State()
     file = State()
+    continue_adding = State()  # Новое состояние для продолжения добавления
 
 class DeleteItem(StatesGroup):
     level = State()
@@ -56,11 +57,14 @@ class DeleteItem(StatesGroup):
 
 
 # ================= UI KEYBOARDS =================
-def main_menu():
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📚 Курсы", callback_data="menu_courses")],
-        [InlineKeyboardButton(text="⚙️ Админ", callback_data="menu_admin")]
-    ])
+def main_menu(user_id):
+    kb = [[InlineKeyboardButton(text="📚 Курсы", callback_data="menu_courses")]]
+    
+    # Кнопка админа видна только админу
+    if user_id == ADMIN_ID:
+        kb.append([InlineKeyboardButton(text="⚙️ Админ", callback_data="menu_admin")])
+    
+    return InlineKeyboardMarkup(inline_keyboard=kb)
 
 
 def courses_kb(db):
@@ -92,16 +96,23 @@ def admin_kb():
     ])
 
 
+def pdf_continue_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📎 Продолжить добавлять PDF", callback_data="pdf_continue")],
+        [InlineKeyboardButton(text="✅ Завершить", callback_data="pdf_finish")]
+    ])
+
+
 # ================= START =================
 @dp.message(Command("start"))
 async def start(m: Message):
-    await m.answer("📱 Мини-библиотека", reply_markup=main_menu())
+    await m.answer("📱 Мини-библиотека", reply_markup=main_menu(m.from_user.id))
 
 
 # ================= NAVIGATION =================
 @dp.callback_query(F.data == "home")
 async def home(call: CallbackQuery):
-    await call.message.edit_text("📱 Главное меню", reply_markup=main_menu())
+    await call.message.edit_text("📱 Главное меню", reply_markup=main_menu(call.from_user.id))
 
 
 @dp.callback_query(F.data == "menu_courses")
@@ -113,7 +124,8 @@ async def menu_courses(call: CallbackQuery):
 @dp.callback_query(F.data == "menu_admin")
 async def menu_admin(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID:
-        return await call.answer("⛔ Нет доступа", show_alert=True)
+        await call.answer("⛔ Нет доступа", show_alert=True)
+        return
 
     await call.message.edit_text("⚙️ Админ панель", reply_markup=admin_kb())
 
@@ -229,14 +241,14 @@ async def save_subject(m: Message, state: FSMContext):
     await m.answer("✅ Предмет добавлен")
 
 
-# ================= ADMIN: ADD PDF =================
+# ================= ADMIN: ADD PDF (УПРОЩЕННО) =================
 @dp.callback_query(F.data == "admin|add_pdf")
 async def add_pdf(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return await call.answer("⛔ Нет доступа", show_alert=True)
     
     await state.set_state(AddPDF.course)
-    await call.message.answer("Введите курс:")
+    await call.message.answer("📝 Введите название курса:")
     await call.answer()
 
 
@@ -244,14 +256,15 @@ async def add_pdf(call: CallbackQuery, state: FSMContext):
 async def pdf_course(m: Message, state: FSMContext):
     await state.update_data(course=m.text)
     await state.set_state(AddPDF.subject)
-    await m.answer("Введите предмет:")
+    await m.answer("📝 Введите название предмета:")
 
 
 @dp.message(AddPDF.subject)
 async def pdf_subject(m: Message, state: FSMContext):
     await state.update_data(subject=m.text)
     await state.set_state(AddPDF.file)
-    await m.answer("Отправьте PDF файл:")
+    await m.answer("📎 Отправьте PDF файл(ы)\nМожно отправить несколько файлов подряд", 
+                   reply_markup=pdf_continue_kb())
 
 
 @dp.message(AddPDF.file, F.document)
@@ -264,11 +277,26 @@ async def save_pdf(m: Message, state: FSMContext):
     db["courses"].setdefault(course, {})
     db["courses"][course].setdefault(subject, [])
 
+    # Сохраняем PDF
     db["courses"][course][subject].append(m.document.file_id)
     save_db(db)
 
+    await m.answer(f"✅ PDF «{m.document.file_name}» сохранён в {course} / {subject}\n\n📎 Отправьте следующий PDF или нажмите «Завершить»", 
+                   reply_markup=pdf_continue_kb())
+
+
+@dp.callback_query(F.data == "pdf_continue")
+async def pdf_continue(call: CallbackQuery, state: FSMContext):
+    await state.set_state(AddPDF.file)
+    await call.message.answer("📎 Отправьте следующий PDF файл:")
+    await call.answer()
+
+
+@dp.callback_query(F.data == "pdf_finish")
+async def pdf_finish(call: CallbackQuery, state: FSMContext):
     await state.clear()
-    await m.answer("📎 PDF сохранён")
+    await call.message.answer("✅ Добавление PDF завершено", reply_markup=admin_kb())
+    await call.answer()
 
 
 # ================= ADMIN: DELETE MENU =================
@@ -276,15 +304,6 @@ async def save_pdf(m: Message, state: FSMContext):
 async def delete_menu(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID:
         return await call.answer("⛔ Нет доступа", show_alert=True)
-    
-    await state.set_state(DeleteItem.level)
-    await state.update_data(level="course")
-    
-    db = load_db()
-    if not db["courses"]:
-        await call.message.answer("📭 Нет ни одного курса для удаления")
-        await state.clear()
-        return
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📚 Удалить курс", callback_data="delete_type|course")],
@@ -445,6 +464,7 @@ async def delete_pdf_choose_file(call: CallbackQuery, state: FSMContext):
     
     kb = InlineKeyboardMarkup(inline_keyboard=[])
     for idx, file_id in enumerate(files):
+        # Получаем информацию о файле (если нужно)
         kb.inline_keyboard.append([InlineKeyboardButton(text=f"❌ PDF #{idx+1}", callback_data=f"delete_pdf_file|{course}|{subject}|{idx}")])
     kb.inline_keyboard.append([InlineKeyboardButton(text="⬅️ Назад", callback_data=f"delete_pdf_course|{course}")])
     
