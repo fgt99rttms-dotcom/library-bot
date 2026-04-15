@@ -332,7 +332,6 @@ async def save_pdf(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-
 # ===================== RUN =====================
 
 async def main():
